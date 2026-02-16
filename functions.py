@@ -2,6 +2,53 @@ import numpy as np
 import pandas as pd
 from .turbines import Turbines
 
+def map_turbine_model(start_year: int, installation_type: str):
+    """
+    Map a wind farm's start year to an appropriate turbine model AND 
+    a representative hub height.
+    
+    Returns:
+        tuple: (model_string, hub_height_meters)
+    """
+    # Handle NaNs or missing types
+    if pd.isna(installation_type) or installation_type == "Unknown":
+        installation_type = "Onshore"
+
+    if installation_type == "Onshore":
+        # Onshore: Trend towards taller towers to capture higher shear
+        if start_year <= 2000:
+            return "VestasV47_660kW_47", 65.0 
+        elif start_year <= 2005:
+            return "DOE_GE_1.5MW_77", 80.0
+        elif start_year <= 2010:
+            return "DOE_GE_1.5MW_77", 90.0 
+        elif start_year <= 2015:
+            return "2017COE_Market_Average_2.3MW_113", 100.0
+        elif start_year <= 2018:
+            return "IEA_Reference_3.4MW_130", 125.0
+        elif start_year <= 2021:
+            return "2020ATB_NREL_Reference_4MW_150", 135.0
+        else: 
+            return "2023NREL_Bespoke_6MW_170", 150.0
+
+    elif installation_type == "Offshore floating":
+        if start_year <= 2020:
+            return "IEA_Reference_6MW_100", 110.0
+        else:
+            return "DTU_Reference_v1_10MW_178", 130.0
+
+    else:  
+        if start_year <= 2005:
+            return "NREL_Reference_5MW_126", 70.0 # Early offshore (Bonus/Siemens)
+        elif start_year <= 2010:
+            return "NREL_Reference_5MW_126", 90.0
+        elif start_year <= 2015:
+            return "LEANWIND_Reference_8MW_164", 100.0 # Siemens 3.6/4.0 era
+        elif start_year <= 2019:
+            return "DTU_Reference_v1_10MW_178", 110.0 # MHI Vestas 8MW era
+        else: 
+            return "IEA_Reference_15MW_240", 140.0
+
 def estimate_wind_power(country, lat, lon, capacity, startyear, prod_year, status, installation_type, xrds, 
                         y_idx, x_idx, wts_smoothing=False, power_smoothing=True, 
                         spatial_interpolation=False, wake_loss_factor=None, 
