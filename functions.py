@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
-from .turbines import Turbines
+import turbine_models
+from turbine_models.parser import Turbines
 
 def map_turbine_model(start_year: int, installation_type: str):
     """
