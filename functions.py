@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import turbine_models
 from turbine_models.parser import Turbines
+from scipy.stats import norm
 
 def map_turbine_model(start_year: int, installation_type: str):
     """
@@ -50,15 +51,11 @@ def map_turbine_model(start_year: int, installation_type: str):
         else: 
             return "IEA_Reference_15MW_240", 140.0
 
-def estimate_wind_power(country, lat, lon, capacity, startyear, prod_year, status, installation_type, xrds, 
+def estimate_wind_power(lat, lon, capacity, startyear, installation_type, xrds, 
                         y_idx, x_idx, wts_smoothing=False, power_smoothing=True, 
                         spatial_interpolation=False, wake_loss_factor=None, 
                         single_turb_curve = False, enforce_start_year=False, verbose=True): 
-    
-    if status not in operating_farms(country, "wind"):
-        return None
-    if enforce_start_year and (isinstance(startyear, (int, float)) and startyear > prod_year):
-        return None
+
     
     try:
         turbs = Turbines()
@@ -120,3 +117,96 @@ def estimate_wind_power(country, lat, lon, capacity, startyear, prod_year, statu
         if verbose:
             print(f"Could not process farm at ({lat}, {lon}). Error: {e}")
         return None
+
+def generate_farm_power_curve(turb_name, n_turbines):
+    """
+    Generates a smoothed, farm-level power curve from a single-turbine curve.
+
+    This function convolves the single-turbine power curve with a Gaussian
+    distribution of wind speeds to represent the spatial variation of wind
+    across a large farm. This results in a smoother power curve that is
+    more representative of a wind farm's aggregate output.
+
+    Args:
+        turbine_power_curve (dict): A dictionary with 'wind_speed_ms' and 'power_kw' keys.
+        n_turbines (int): The number of turbines in the farm.
+        wind_speed_std_dev (float): The standard deviation of the wind speed
+                                    across the farm. This controls the amount
+                                    of "smearing" or smoothing. A larger value
+                                    results in a smoother curve. Defaults to 1.5 m/s.
+
+    Returns:
+        dict: A new power curve dictionary with 'wind_speed_ms' and 'power_kw' for the entire farm.
+    """
+    turbs = Turbines()
+    specs = turbs.specs(turb_name)
+
+    min_ws = 0.0
+    max_ws = 40.0
+    ws_step = 0.25
+    farm_wind_speeds = np.arange(min_ws, max_ws + ws_step, ws_step)
+    farm_power = np.zeros_like(farm_wind_speeds)
+    power_curve = turbs.table(turb_name)
+
+    single_turbine_ws = power_curve['wind_speed_ms']
+    single_turbine_power = power_curve['power_kw']
+    #Interpolation
+    interp_ws = np.linspace(min(single_turbine_ws), max(single_turbine_ws), 500)
+    interp_power = np.interp(interp_ws, single_turbine_ws, single_turbine_power)
+
+    for i, ws_mean in enumerate(farm_wind_speeds):
+        std_dev = 0.6 + 0.1 * farm_wind_speeds[i] #Increasing std dev with wind speed
+
+        wind_dist = norm(loc=ws_mean, scale=std_dev)
+
+        bin_width = interp_ws[1] - interp_ws[0]
+        probabilities = wind_dist.pdf(interp_ws) * bin_width
+
+        expected_power_single_turbine = np.sum(interp_power * probabilities)
+        farm_power[i] = expected_power_single_turbine * n_turbines
+
+    return {'wind_speed_ms': farm_wind_speeds, 'power_kw': farm_power}
+
+def interpolate_idw(xrds, lat, lon, var, y_idx, x_idx, ref_height_idx, neighbors=4):
+    """
+    Performs Inverse Distance Weighting (IDW) interpolation for a variable 
+    at a specific lat/lon using a window around the nearest grid point.
+    """
+    # Define a search window around the nearest point (3x3 covers the 4 closest in a regular grid)
+    y_min = max(0, y_idx - 1)
+    y_max = min(len(xrds['y']), y_idx + 2)
+    x_min = max(0, x_idx - 1)
+    x_max = min(len(xrds['x']), x_idx + 2)
+
+    # Extract coordinates of the window
+    sub_lats = xrds['latitude'].isel(y=slice(y_min, y_max), x=slice(x_min, x_max)).values
+    sub_lons = xrds['longitude'].isel(y=slice(y_min, y_max), x=slice(x_min, x_max)).values
+
+    # Calculate squared distances
+    dists_sq = (sub_lats - lat)**2 + (sub_lons - lon)**2
+    flat_dists = dists_sq.flatten()
+
+    # Find k nearest neighbors
+    k = min(neighbors, len(flat_dists))
+    idx_nearest = np.argsort(flat_dists)[:k]
+    
+    # Calculate weights
+    dists_nearest = flat_dists[idx_nearest]
+    weights = 1 / (dists_nearest + 1e-8) # Avoid division by zero
+    weights /= weights.sum()
+
+    # Interpolate
+    interpolated_series = 0
+    window_shape = sub_lats.shape
+    
+    for i, flat_idx in enumerate(idx_nearest):
+        wy, wx = np.unravel_index(flat_idx, window_shape)
+        # Map back to global indices
+        gy = y_min + wy
+        gx = x_min + wx
+        if ref_height_idx is not None:
+            interpolated_series += xrds[var].isel(heightAboveGround=ref_height_idx, y=gy, x=gx) * weights[i]
+        else:
+            interpolated_series += xrds[var].isel(y=gy, x=gx) * weights[i]
+
+    return interpolated_series
