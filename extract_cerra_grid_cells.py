@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -172,6 +173,16 @@ def estimate_site_timeseries(
     return site_ts
 
 
+def _write_netcdf_atomic(ds_out: xr.Dataset, output: Path) -> None:
+    tmp_output = output.with_name(f".{output.name}.{uuid4().hex}.tmp")
+    try:
+        ds_out.to_netcdf(tmp_output, engine="h5netcdf")
+        tmp_output.replace(output)
+    except Exception:
+        if tmp_output.exists():
+            tmp_output.unlink()
+        raise
+
 def main() -> None:
     sites_raw = _read_site_metadata(SHAPEFILE)
     selected_sites = _select_sites(sites_raw, SITE_NAMES, ALL_SITES)
@@ -248,7 +259,7 @@ def main() -> None:
     )
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    ds_out.to_netcdf(output, engine="h5netcdf")
+    _write_netcdf_atomic(ds_out, output)
 
     print(f"Saved timeseries to: {output}")
     print("Sites included:")
